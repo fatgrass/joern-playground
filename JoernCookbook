@@ -1,0 +1,80 @@
+Gremlin Cookbook
+
+STARTING OFF:
+
+A vanilla Gremiln query would start by grapping all vertices in the graph and filtering from there,
+but for a large code base this will take far too long (and you'll probably run out of heap
+memory). To address this, the nodes are indexed with Apache Lucene and can be queried
+with the queryNodeIndex function defined in python-joern/joern/joernsteps/lookup.groovy. This
+function takes in a Lucene query as a String and returns the result. It is used in some of
+the already-defined Gremlin traversals, including:
+
+- getCallsTo(functionName)
+  e.g., getCallsTo("malloc")
+  Gets nodes associated with calls to malloc. 
+
+- getArguments(functionName, argNum)
+  e.g., getArguments("memcpy", "2")
+  Finds all calls to memcpy and grabs the 3rd (0-indexed!) argument. 
+
+
+MATCH QUERIES:
+
+the .match transform acts like a .filter call, except it traverses the entire AST subtree rooted
+at the current node to perform the filtering.  For example:
+
+getArguments("malloc", "0").match { it.type == "AdditiveExpression" }
+
+This traversal finds all malloc() calls and grabs their first arguments, and then filters out
+the ones that aren't some additive expression (e.g., len + 1). We can't use .filter here, 
+because the type of node returned by getArguments() is "Argument". We need to use .match 
+to traverse into the AST subtree to see whether that Argument is indeed an AdditiveExpression.
+
+INTEGER + BUFFER OVERFLOW:
+
+Common vulnerabilities involve additive expressions in allocation functions, e.g., malloc(len + 1).
+If len = INT_MAX or something similar, integer overflow will result in an allocation of 0 bytes.
+
+This returns all calls to malloc where the argument involves addition
+ex) j.runGremlinQuery('getArguments("malloc", "0").match { it.type == "AdditiveExpression" }')
+
+More complicated:
+
+getArguments("malloc", "0")
+      .sideEffect { cnt = it.code }
+      .match { it.type == "AdditiveExpression" }.statements()
+      .out("REACHES")
+      .match { it.type == "CallExpression" && it.code.startsWith("memcpy") }.ithArguments("2") 
+      .filter { it.code != cnt }
+      .match { it.type == "AdditiveExpression" }
+
+Explanation:
+Get calls to malloc(), grab first argument -> filter only arguments that involve addition
+-> save code portion into variable "cnt" -> get the enclosing statement (i.e., the malloc() call itself)
+-> get statement nodes connected by data flow -> 
+
+SPRINTF OVERFLOW
+
+If a char buffer is declared to write to but the corresponding string is not checked for length, this
+can result in an overflow.
+
+
+
+MISC
+
+Most of (if not all) of the values in Joern are Strings. You can convert a String to an Integer in
+Gremlin via .toInteger().  For example:
+
+.filter{ it.childNum.toInteger() > 2 }
+
+DATABASE LAYOUT
+
+The premise of a general property graph is simple: It's a graph with directed edges, and every vertex/edge
+can have a dictionary of key value pairs that are the properties.  Additionally, each edge can have a label.
+It's useful to know what the names of useful keys/values/labels are, and what they all mean, so here's a rundown:
+
+Keys:
+	type: denotes type of the node
+	      - Function: represents a new function definition (e.g., int main(...) { // code ... })
+	          - FunctionDef: method signature (params and return type)
+		      - ParameterList 
