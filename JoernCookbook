@@ -2,7 +2,7 @@ Gremlin Cookbook
 
 STARTING OFF:
 
-A vanilla Gremiln query would start by grapping all vertices in the graph and filtering from there,
+A vanilla Gremiln query would start by grabbing all vertices in the graph and filtering from there,
 but for a large code base this will take far too long (and you'll probably run out of heap
 memory). To address this, the nodes are indexed with Apache Lucene and can be queried
 with the queryNodeIndex function defined in python-joern/joern/joernsteps/lookup.groovy. This
@@ -30,6 +30,22 @@ the ones that aren't some additive expression (e.g., len + 1). We can't use .fil
 because the type of node returned by getArguments() is "Argument". We need to use .match 
 to traverse into the AST subtree to see whether that Argument is indeed an AdditiveExpression.
 
+--------------------------------------------------------------------------------------------------
+"UNSANITIZED" STEP
+
+Joern's main selling point is its ability to model control flow (the order in which statements
+are executed) and data flow (how different variables interact and influence each other's values
+during the execution of a program). In terms of Gremlin, the "unsanitized" step is what allows
+the user to search for vulnerabilities that depend on both data and control flow. You can add
+the unsanitized step into your Gremlin traversal like so
+
+.unsanitized( { it, s -> BOOLEAN THAT DEFINES WHAT YOU MEAN BY "SANITIZED" } )... // rest of traversal
+
+Note that YOU have to define what proper sanitization looks like. 
+
+
+--------------------------------------------------------------------------------------------------
+
 INTEGER + BUFFER OVERFLOW:
 
 Common vulnerabilities involve additive expressions in allocation functions, e.g., malloc(len + 1).
@@ -53,19 +69,57 @@ Get calls to malloc(), grab first argument -> filter only arguments that involve
 -> save code portion into variable "cnt" -> get the enclosing statement (i.e., the malloc() call itself)
 -> get statement nodes connected by data flow -> 
 
+---------------------------------------------------------------------------------------------------------------
+
 SPRINTF OVERFLOW
 
-If a char buffer is declared to write to but the corresponding string is not checked for length, this
-can result in an overflow.
+If a char buffer is declared to write to via sprintf() but the corresponding string that is being written, this
+can result in an overflow. For example, I found a vulnerability in OpenJPEG via this query:
 
+     getCallsTo("sprintf").filter{ it.ithArguments("1").code.toList()[0].contains("%s") }
+    .statements().unsanitized({ it, s -> it.codeContains("strlen") }).dedup()
+    .filter{ it.code.contains("char") && it.code.contains("[") && !it.code.contains("strlen")}
+
+Explanation:
+
+We find all calls to sprint() where the second argument (the format string) contains the %s specifier. We
+the take the unsanitized step, where we define the use of strlen() at any point in the control flow as
+proper sanitization (yes I know this could probably be more specific).  Finally, we only want to look at
+
+
+
+
+---------------------------------------------------------------------------------------------------------------
 
 
 MISC
 
-Most of (if not all) of the values in Joern are Strings. You can convert a String to an Integer in
-Gremlin via .toInteger().  For example:
+*  Most of (if not all) of the values in Joern are Strings. You can convert a String to an Integer in
+   Gremlin via .toInteger().  For example:
 
-.filter{ it.childNum.toInteger() > 2 }
+	.filter{ it.childNum.toInteger() > 1 } 
+
+   which results in nodes that are at least the 3rd child of their parent. A situation where you'd
+   possibly want to do this is looking for format vulnerabilities such as fscanf. The first parameter
+   to fscanf is the FILE pointer, and the second argument is the format string. If you want to return
+   the actual format parameters, then the above step is what you'd use. To spell it all out:   
+
+       getCallsTo("fscanf").callToArguments().filter{ it.childNum.toInteger() > 1 }
+
+*  I'm not sure why, but occasionally there's some funky syntax needed in .filter{} calls when you use some of the Joern steps.
+   Here's an example:
+
+   	  getCallsTo("sprintf").filter{ it.ithArguments("1").code.toList()[0].contains("%s") }
+
+   The idea here is simple: we want to find all calls to sprintf(), and filter out the cases where the format string doesn't
+   contain a "%s", e.g., looking for a char buffer overflow. For whatever reason, you can't call .contains() directly on
+   it.ithArguments("1").code, so you first need to convert it to a list via toList() and then grab the resulting String
+   inside of it via [0]. If we had not inserted ithArguments("1"), and instead just done .filter{ it.code.contains("%s") },
+   then that would have worked just fine, so I'm not sure what the deal is here.
+
+   TLDR; if .contains() is throwing you an error, try inserting .toList()[0] beforehand :)
+
+
 
 DATABASE LAYOUT
 

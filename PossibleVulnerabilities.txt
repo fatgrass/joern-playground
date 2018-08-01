@@ -1,0 +1,24 @@
+OPENJPEG
+
+- sprintf buffer overflow in opj_compress.c/opj_decompress.c (parse_cmdline_encoder)
+
+I opened this issue here: https://github.com/uclouvain/openjpeg/issues/1129
+
+The Joern query I used to find this issue was:
+
+    getCallsTo("sprintf").filter{ it.ithArguments("1").code.toList()[0].contains("%s") }
+    .statements().unsanitized({ it, s -> it.codeContains("strlen") }).dedup()
+    .filter{ it.code.contains("char") && it.code.contains("[") && !it.code.contains("strlen")}
+
+Explanation: We get calls to sprintf() where the format string argument contains a %s. We then
+use the unsanitized() step to see if any statically allocated char buffers are passed to this
+sprintf call. Our definition of "sanitized" here is using "strlen" at any point in the control
+flow.  The three statements in the last filter call ensure we are declaring a char buffer on the 
+stack, and that we are not using strlen to do so (i.e., we are looking for static char buffers
+with a hard-coded length). 
+
+- sprintf buffer overflow in opj_mj2_extract.c (main)
+
+Issue here: https://github.com/uclouvain/openjpeg/issues/1088
+
+Same Joern query as above. 
